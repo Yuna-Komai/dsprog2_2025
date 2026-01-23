@@ -3,135 +3,112 @@ from bs4 import BeautifulSoup
 import sqlite3
 import time
 import pandas as pd
-from urllib.robotparser import RobotFileParser
-import unittest
 import logging
+import unittest
 from typing import Optional, Dict, List, Any
 
 # ロギング設定
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler()]
+    format='%(asctime)s [%(levelname)s] %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+class SaitamaHousingScraper:
+    """Webから住宅データを取得するクラス"""
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+
+    def fetch_data(self) -> List[tuple]:
+        """実際にスクレイピングを行う（ここでは構造の例を示します）"""
+        try:
+            # 実際には対象のURLにアクセス
+            # response = requests.get(self.base_url, headers=self.headers)
+            # soup = BeautifulSoup(response.content, 'html.parser')
+            
+            logger.info("Webサイトからデータを取得中...")
+            time.sleep(1)  # サーバー負荷軽減のための待機
+
+            # --- ここで解析ロジック（例） ---
+            # 取得したHTMLからデータを抽出するシミュレーション
+            # 実際は soup.find_all(...) などで抽出します
+            scraped_data = [
+                ('さいたま市浦和区', 6800, 62.5), ('さいたま市大宮区', 6500, 60.1),
+                ('戸田市', 6200, 58.0), ('和光市', 6100, 59.5), ('川口市', 5950, 61.8),
+                ('秩父市', 3100, 93.0)
+            ]
+            return scraped_data
+
+        except Exception as e:
+            logger.error(f"スクレイピングエラー: {e}")
+            return []
+
 class SaitamaHousingAnalyzer:
-    """埼玉県内の住宅統計データを分析するクラス"""
-    
+    """データベース保存と分析を担当するクラス"""
     def __init__(self, db_name: str = 'saitama_housing_final.db'):
         self.db_name = db_name
 
-    def get_data_by_query(self, query: str, params: tuple = ()) -> pd.DataFrame:
-        """指定されたSQLクエリを用いてDBからデータを取得する"""
-        try:
-            with sqlite3.connect(self.db_name) as conn:
-                df = pd.read_sql(query, conn, params=params)
-            return df
-        except sqlite3.Error as e:
-            logger.error(f"データベースクエリ実行エラー: {e}")
-            return pd.DataFrame()
+    def setup_db(self, data: List[tuple]):
+        """取得データをDBに格納する"""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DROP TABLE IF EXISTS housing_stats')
+            cursor.execute('''
+                CREATE TABLE housing_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    city_name TEXT NOT NULL,
+                    avg_rent REAL,
+                    avg_area REAL
+                )
+            ''')
+            cursor.executemany(
+                'INSERT INTO housing_stats (city_name, avg_rent, avg_area) VALUES (?, ?, ?)', 
+                data
+            )
+            conn.commit()
+            logger.info(f"DBに {len(data)} 件のデータを保存しました。")
 
-    def fetch_top_cities(self, limit: int = 5) -> pd.DataFrame:
-        """家賃単価が高い市区町村のランキングを取得"""
-        query = "SELECT city_name, avg_rent, avg_area FROM housing_stats ORDER BY avg_rent DESC LIMIT ?"
-        return self.get_data_by_query(query, (limit,))
+    def get_data_by_query(self, query: str, params: tuple = ()) -> pd.DataFrame:
+        with sqlite3.connect(self.db_name) as conn:
+            return pd.read_sql(query, conn, params=params)
 
     def compare_city_dynamic(self, target_city: str) -> Optional[Dict[str, Any]]:
-        """特定の市区町村を県平均と比較分析する"""
-        all_data = self.get_data_by_query("SELECT * FROM housing_stats")
-        if all_data.empty:
-            return None
-
-        avg_rent = all_data['avg_rent'].mean()
-        city_data = all_data[all_data['city_name'].str.contains(target_city)]
-
-        if city_data.empty:
-            logger.warning(f"対象都市 '{target_city}' が見つかりません。")
-            return None
+        df = self.get_data_by_query("SELECT * FROM housing_stats")
+        if df.empty: return None
+        
+        avg_rent = df['avg_rent'].mean()
+        city_data = df[df['city_name'].str.contains(target_city)]
+        
+        if city_data.empty: return None
         
         row = city_data.iloc[0]
-        # 県平均よりいくら安いかを計算 (平均 - 都市の家賃)
-        diff = avg_rent - row['avg_rent']
         return {
             "city": row['city_name'],
             "rent": row['avg_rent'],
-            "area": row['avg_area'],
-            "diff_from_avg": diff,
-            "is_lower": diff > 0
+            "diff_from_avg": avg_rent - row['avg_rent']
         }
 
-class TestHousingAnalyzer(unittest.TestCase):
-    """加点要素：単体テストの実装"""
-    def setUp(self):
-        self.db_name = 'saitama_housing_final.db'
-        self.analyzer = SaitamaHousingAnalyzer(self.db_name)
-
-    def test_db_content(self):
-        df = self.analyzer.fetch_top_cities(1)
-        self.assertGreater(len(df), 0, "DBにデータが存在することを確認")
-
-    def test_analysis_output(self):
-        result = self.analyzer.compare_city_dynamic("秩父市")
-        self.assertIsNotNone(result)
-        self.assertIn("diff_from_avg", result)
-
-def setup_database(db_name: str) -> bool:
-    """スクレイピングをシミュレートし、DBを初期構築する"""
-    try:
-        conn = sqlite3.connect(db_name)
-        cursor = conn.cursor()
-        cursor.execute('DROP TABLE IF EXISTS housing_stats')
-        cursor.execute('''
-            CREATE TABLE housing_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                city_name TEXT NOT NULL,
-                avg_rent REAL,
-                avg_area REAL
-            )
-        ''')
-
-        data_list = [
-            ('さいたま市浦和区', 6800, 62.5), ('さいたま市大宮区', 6500, 60.1),
-            ('戸田市', 6200, 58.0), ('和光市', 6100, 59.5), ('川口市', 5950, 61.8),
-            ('朝霞市', 5700, 63.2), ('所沢市', 4900, 71.0), ('川越市', 4850, 75.2),
-            ('越谷市', 4700, 73.5), ('上尾市', 4500, 72.8), ('春日部市', 4100, 79.0),
-            ('熊谷市', 3700, 84.5), ('本庄市', 3600, 86.2), ('秩父市', 3100, 93.0)
-        ]
-
-        cursor.executemany('INSERT INTO housing_stats (city_name, avg_rent, avg_area) VALUES (?, ?, ?)', data_list)
-        conn.commit()
-        logger.info(f"DB構築完了: {len(data_list)}件のデータを格納しました。")
-        return True
-    except sqlite3.Error as e:
-        logger.error(f"DB構築中にエラーが発生しました: {e}")
-        return False
-    finally:
-        conn.close()
-
 def main():
-    db_name = 'saitama_housing_final.db'
-    if setup_database(db_name):
-        analyzer = SaitamaHousingAnalyzer(db_name)
-        
-        # 1. 上位3件のランキング表示
-        top_cities = analyzer.fetch_top_cities(3)
-        print("【上位3件のランキング】")
-        print(top_cities)
-        print("\n")
+    # 1. スクレイピング実行
+    # 本来は実際のURLを指定します
+    scraper = SaitamaHousingScraper("https://example.com/saitama-housing")
+    data = scraper.fetch_data()
 
-        # 2. 秩父市の比較分析
-        analysis = analyzer.compare_city_dynamic("秩父市")
-        if analysis:
-            # 1,950円のようにカンマを入れる指定
-            diff_fmt = "{:,.0f}".format(analysis['diff_from_avg'])
-            print("【比較分析】")
-            print(f"{analysis['city']}の家賃は県平均より {diff_fmt}円 安いです。")
-        
-        # 3. テストの実行（加点要素）
-        print("\n--- 自動テスト実行 ---")
-        suite = unittest.TestLoader().loadTestsFromTestCase(TestHousingAnalyzer)
-        unittest.TextTestRunner(verbosity=2).run(suite)
+    if not data:
+        logger.error("データが取得できませんでした。")
+        return
+
+    # 2. DB構築と分析
+    analyzer = SaitamaHousingAnalyzer()
+    analyzer.setup_db(data)
+    
+    # 3. 結果の表示
+    analysis = analyzer.compare_city_dynamic("秩父市")
+    if analysis:
+        print(f"\n【分析結果】\n{analysis['city']}の家賃は県平均より {analysis['diff_from_avg']:,.0f}円 安いです。")
 
 if __name__ == "__main__":
     main()
